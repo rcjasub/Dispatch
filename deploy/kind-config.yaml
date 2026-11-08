@@ -1,0 +1,9 @@
+# kind create cluster --name gqueue --config deploy/kind-config.yaml
+# One control plane + two worker nodes, so pods actually spread across nodes
+# and "kill a pod" / "lose a node" tests behave like a real cluster.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane
+  - role: worker
+  - role: worker

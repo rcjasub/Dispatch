@@ -3,7 +3,6 @@ package gqueue
 import (
 	"context"
 	"fmt"
-	"github.com/redis/go-redis/v9"
 	"math"
 	"sync"
 	"time"
@@ -25,17 +24,25 @@ type Worker struct {
 	onFailed    Event
 	waitGroup   sync.WaitGroup
 	rateLimit   *RateLimitConfig
+	metrics     Metrics
 }
-
-
 
 func NewWorker(queue *Queue, concurrency int, rt *RateLimitConfig) *Worker {
 	return &Worker{
 		queue:       queue,
 		handlers:    make(map[string]ProcessFunc),
 		concurrency: concurrency,
-		rateLimit:   rt,		
+		rateLimit:   rt,
+		metrics:     noopMetrics{},
 	}
+}
+
+// SetMetrics plugs in a metrics sink (e.g. prom.New). Call before Start.
+func (w *Worker) SetMetrics(m Metrics) {
+	if m == nil {
+		m = noopMetrics{}
+	}
+	w.metrics = m
 }
 
 func (w *Worker) Register(name string, fn ProcessFunc) {
@@ -47,30 +54,20 @@ func (w *Worker) Start(ctx context.Context) {
 		w.waitGroup.Add(1)
 		go func() {
 			defer w.waitGroup.Done() // defer means "run this when the function returns"
+			name := fmt.Sprintf("worker-%d", i)
 			for {
-				for w.queue.IsPaused(ctx) {
-					select {
-					case <-ctx.Done():
-						return
-					case <-time.After(500 * time.Millisecond):
-					}
-				}
-				job, ok := w.queue.Dequeue(ctx)
+				// One atomic step: checks pause, pops by priority, records the job
+				// in active-jobs and marks it active (see reliable.go).
+				job, ok := w.queue.claim(ctx, name)
 				if !ok {
 					return
 				}
+				// Once we own a job, finish it even if shutdown starts (SIGTERM in
+				// Kubernetes cancels ctx). With the cancelled ctx every Redis write
+				// below would fail, leaving the job stuck in active-jobs until the
+				// stalled detector re-ran it: a duplicate on every graceful restart.
 				job.StartedAt = time.Now()
-				w.queue.client.HSet(ctx, "job:"+job.Id,
-					"status", StatusActive.String(),
-					"startedAt", job.StartedAt.Format(time.RFC3339),
-					"worker", fmt.Sprintf("worker-%d", i),
-				)
-				w.queue.client.ZAdd(ctx, "active-jobs:"+w.queue.Name, redis.Z{
-					Score:  float64(job.StartedAt.Unix()),
-					Member: job.Id,
-				})
-				w.processJob(ctx, job)
-				w.queue.client.ZRem(ctx, "active-jobs:"+w.queue.Name, job.Id)
+				w.processJob(context.WithoutCancel(ctx), job)
 			}
 		}()
 	}
@@ -94,7 +91,15 @@ func (w *Worker) processJob(ctx context.Context, job Job) {
 			return "", fmt.Errorf("no handler registered for job type: %s", j.Name)
 		}
 	}
+	started := time.Now()
+	var wait time.Duration
+	if !job.CreatedAt.IsZero() {
+		wait = started.Sub(job.CreatedAt)
+	}
+	w.metrics.JobStarted(job, wait)
+
 	result, err := handler(job, report)
+	took := time.Since(started)
 
 	if err != nil {
 		job.Attempts++
@@ -106,6 +111,11 @@ func (w *Worker) processJob(ctx context.Context, job Job) {
 				"attempts", job.Attempts,
 			)
 			w.queue.Enqueue(ctx, job)
+			// Not atomic with the Enqueue above: a crash in between leaves the job
+			// both scheduled for retry and in active-jobs, so it can run twice.
+			// Only affects jobs that already failed once; acceptable for now.
+			w.queue.client.ZRem(ctx, "active-jobs:"+w.queue.Name, job.Id)
+			w.metrics.JobRetried(job, took)
 
 		} else {
 			job.Status = StatusDeadLetter
@@ -117,7 +127,9 @@ func (w *Worker) processJob(ctx context.Context, job Job) {
 				"error", job.Error,
 			)
 			w.queue.client.LPush(ctx, "dead-letter:"+w.queue.Name, job.Id)
+			w.queue.client.ZRem(ctx, "active-jobs:"+w.queue.Name, job.Id)
 			w.queue.client.Publish(ctx, "job:failed", job.Id)
+			w.metrics.JobDeadLettered(job, took)
 			if w.onFailed != nil {
 				w.onFailed(job)
 			}
@@ -125,12 +137,9 @@ func (w *Worker) processJob(ctx context.Context, job Job) {
 	} else {
 		job.Status = StatusCompleted
 		job.CompletedAt = time.Now()
-		w.queue.client.HSet(ctx, "job:"+job.Id,
-			"status", job.Status.String(),
-			"completedAt", job.CompletedAt.Format(time.RFC3339),
-			"result", result,
-		)
-		w.queue.client.Publish(ctx, "job:completed", job.Id)
+		// HSET completed + ZREM active-jobs + PUBLISH as one atomic step (reliable.go).
+		w.queue.ack(ctx, job, result)
+		w.metrics.JobCompleted(job, took)
 		if w.onCompleted != nil {
 			w.onCompleted(job)
 		}

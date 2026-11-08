@@ -1,0 +1,51 @@
+# Step 2: local monitoring stack.
+#
+#   docker compose -f deploy/local/docker-compose.yml up -d --build
+#
+#   Redis       localhost:6380   (loadtest: -redis 127.0.0.1:6380)
+#   Worker      metrics scraped inside the compose network (no host port)
+#   Prometheus  http://localhost:9090
+#   Grafana     http://localhost:3000   (anonymous admin, dashboard "gqueue")
+#
+# Scale workers:  docker compose -f deploy/local/docker-compose.yml up -d --scale worker=4
+# (Prometheus finds every replica through Docker's DNS, see prometheus.yml.)
+name: gqueue
+
+services:
+  redis:
+    image: redis:7.4-alpine
+    ports: ["127.0.0.1:6380:6379"]   # 6380: another project already uses 6379 on this machine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+
+  worker:
+    build:
+      context: ../..
+    environment:
+      REDIS_ADDR: redis:6379
+      QUEUE_NAME: default
+      CONCURRENCY: "8"
+      WORK: 5ms
+      WORK_MODE: sleep
+      FAIL_RATE: "0.02"   # 2% of runs fail -> exercises retries and the dead-letter list
+      RATE_LIMIT: "0"
+    depends_on: [redis]
+    # No host port: with --scale, replicas would fight over it. Prometheus
+    # scrapes them on the internal network instead.
+
+  prometheus:
+    image: prom/prometheus:v3.4.1
+    ports: ["9090:9090"]
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+
+  grafana:
+    image: grafana/grafana:12.0.1
+    ports: ["3000:3000"]
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on: [prometheus]

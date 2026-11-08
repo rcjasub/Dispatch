@@ -1,0 +1,19 @@
+# Worker settings, injected as environment variables (envFrom in 30-worker.yaml).
+# Changing a value does NOT reach running pods by itself; env is read at start:
+#   kubectl -n gqueue apply -f deploy/k8s/20-configmap.yaml
+#   kubectl -n gqueue rollout restart deployment/worker
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: worker-config
+  namespace: gqueue
+data:
+  QUEUE_NAME: default
+  CONCURRENCY: "4"            # goroutines per pod; total = CONCURRENCY x replicas
+  WORK: 5ms
+  WORK_MODE: cpu              # cpu so the HPA (CPU-based) sees load; "sleep" for I/O-like jobs
+  FAIL_RATE: "0"              # e.g. 0.02 to exercise retries / dead letters
+  RATE_LIMIT: "0"             # jobs/sec shared by ALL pods (Lua token bucket in Redis); 0 = off
+  STALLED_THRESHOLD: 30s      # must be > the longest job, or slow jobs get requeued while still running
+  # Retry limit is a per-job setting chosen by the producer (loadtest -max-retries),
+  # the same as BullMQ's `attempts` option, so it is not configured here.

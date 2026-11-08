@@ -15,7 +15,12 @@ var testClient *redis.Client
 
 func TestMain(m *testing.M) {
 	// Create one shared Redis client for all tests instead of each test making its own.
-	testClient = redis.NewClient(&redis.Options{Addr: "localhost:6379"})
+	// REDIS_ADDR lets tests target a dedicated Redis instead of one shared with other projects.
+	addr := os.Getenv("REDIS_ADDR")
+	if addr == "" {
+		addr = "localhost:6379"
+	}
+	testClient = redis.NewClient(&redis.Options{Addr: addr})
 
 	// m.Run() triggers all TestXxx functions in this package.
 	// It only exists here because TestMain gives us m — we must call it ourselves.

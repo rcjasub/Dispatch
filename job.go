@@ -22,6 +22,19 @@ const (
 	PriorityLow
 )
 
+func (p JobPriority) String() string {
+	switch p {
+	case PriorityHigh:
+		return "high"
+	case PriorityMid:
+		return "mid"
+	case PriorityLow:
+		return "low"
+	default:
+		return "unknown"
+	}
+}
+
 type Job struct {
 	Id          string
 	Name        string
