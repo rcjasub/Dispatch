@@ -1,0 +1,43 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker
+  namespace: gqueue
+spec:
+  replicas: 2   # once the HPA (40-hpa.yaml) exists, it owns this number
+  selector:
+    matchLabels: { app: worker }
+  template:
+    metadata:
+      labels: { app: worker }
+      annotations:
+        # The in-cluster Prometheus (50-prometheus.yaml) scrapes pods with these.
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "2112"
+    spec:
+      # On delete/scale-down Kubernetes sends SIGTERM, waits this long, then SIGKILL.
+      # The worker stops dequeuing on SIGTERM and finishes in-flight jobs, so this
+      # must be longer than the slowest job.
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: worker
+          image: gqueue-worker:dev
+          imagePullPolicy: IfNotPresent   # image is loaded into kind, not pulled from a registry
+          envFrom:
+            - configMapRef: { name: worker-config }
+          env:
+            - name: REDIS_ADDR
+              value: redis:6379
+          ports:
+            - name: http
+              containerPort: 2112
+          # The HPA computes CPU % relative to the *request*, so requests are mandatory for it.
+          resources:
+            requests: { cpu: 200m, memory: 32Mi }
+            limits: { cpu: 500m, memory: 128Mi }
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 10
+          readinessProbe:
+            httpGet: { path: /readyz, port: http }
+            periodSeconds: 5

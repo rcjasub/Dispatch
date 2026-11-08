@@ -1,0 +1,6 @@
+.git
+*.exe
+/gqueue
+docs
+deploy
+DEVLOG.md

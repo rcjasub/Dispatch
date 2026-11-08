@@ -1,0 +1,17 @@
+global:
+  scrape_interval: 5s   # short for load tests; 15-30s is typical in production
+
+scrape_configs:
+  # Every worker replica in docker compose. dns_sd resolves the service name
+  # "worker" to one A record per container, so --scale is picked up automatically.
+  - job_name: gqueue-worker
+    dns_sd_configs:
+      - names: [worker]
+        type: A
+        port: 2112
+        refresh_interval: 5s   # default 30s; short so --scale changes show up quickly
+
+  # A worker started on the host with `go run ./cmd/worker` (optional).
+  - job_name: gqueue-worker-host
+    static_configs:
+      - targets: ["host.docker.internal:2112"]

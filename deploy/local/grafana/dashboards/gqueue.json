@@ -1,0 +1,66 @@
+{
+  "uid": "gqueue",
+  "title": "gqueue",
+  "schemaVersion": 39,
+  "refresh": "5s",
+  "time": { "from": "now-15m", "to": "now" },
+  "panels": [
+    {
+      "type": "timeseries", "title": "Queue depth per lane (waiting)",
+      "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "refId": "A", "expr": "max by (priority) (gqueue_waiting_jobs)", "legendFormat": "{{priority}}" }]
+    },
+    {
+      "type": "timeseries", "title": "Throughput (jobs/s by outcome)",
+      "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "sum by (outcome) (rate(gqueue_jobs_processed_total[$__rate_interval]))", "legendFormat": "{{outcome}}" },
+        { "refId": "B", "expr": "sum(rate(gqueue_jobs_processed_total[$__rate_interval]))", "legendFormat": "total" }
+      ]
+    },
+    {
+      "type": "timeseries", "title": "Wait time p50 / p95 by priority",
+      "gridPos": { "x": 0, "y": 8, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "s" } },
+      "targets": [
+        { "refId": "A", "expr": "histogram_quantile(0.50, sum by (le, priority) (rate(gqueue_job_wait_seconds_bucket[$__rate_interval])))", "legendFormat": "p50 {{priority}}" },
+        { "refId": "B", "expr": "histogram_quantile(0.95, sum by (le, priority) (rate(gqueue_job_wait_seconds_bucket[$__rate_interval])))", "legendFormat": "p95 {{priority}}" }
+      ]
+    },
+    {
+      "type": "timeseries", "title": "Processing latency p50 / p95",
+      "gridPos": { "x": 12, "y": 8, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "s" } },
+      "targets": [
+        { "refId": "A", "expr": "histogram_quantile(0.50, sum by (le) (rate(gqueue_job_processing_seconds_bucket[$__rate_interval])))", "legendFormat": "p50" },
+        { "refId": "B", "expr": "histogram_quantile(0.95, sum by (le) (rate(gqueue_job_processing_seconds_bucket[$__rate_interval])))", "legendFormat": "p95" }
+      ]
+    },
+    {
+      "type": "timeseries", "title": "Failures, retries, dead letters (per s)",
+      "gridPos": { "x": 0, "y": 16, "w": 8, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "refId": "A", "expr": "sum by (outcome) (rate(gqueue_jobs_processed_total{outcome!=\"completed\"}[$__rate_interval]))", "legendFormat": "{{outcome}}" }]
+    },
+    {
+      "type": "timeseries", "title": "Dead-letter / delayed / active",
+      "gridPos": { "x": 8, "y": 16, "w": 8, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "max(gqueue_dead_letter_jobs)", "legendFormat": "dead-letter" },
+        { "refId": "B", "expr": "max(gqueue_delayed_jobs)", "legendFormat": "delayed (retry backoff)" },
+        { "refId": "C", "expr": "max(gqueue_active_jobs)", "legendFormat": "active" }
+      ]
+    },
+    {
+      "type": "stat", "title": "Worker replicas up",
+      "gridPos": { "x": 16, "y": 16, "w": 8, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "refId": "A", "expr": "count(up{job=~\"gqueue.*\"} == 1)" }]
+    }
+  ]
+}

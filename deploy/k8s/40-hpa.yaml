@@ -1,0 +1,33 @@
+# Scales the worker Deployment on CPU. Requires metrics-server (see DEVLOG / README).
+#
+# Limitation worth explaining: CPU is a *proxy* for load. A deep queue of
+# sleep-mode (I/O-like) jobs uses little CPU, so this HPA would not scale.
+# Scaling on queue depth (gqueue_waiting_jobs) needs a custom/external metrics
+# adapter, e.g. KEDA with its Redis list scaler or Prometheus scaler.
+#
+# For the fixed-size scaling test (1/2/4/8 pods), delete this HPA first,
+# otherwise it fights `kubectl scale`:  kubectl -n gqueue delete hpa worker
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: worker
+  namespace: gqueue
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: worker
+  minReplicas: 1
+  maxReplicas: 8
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 0   # react to spikes immediately
+    scaleDown:
+      stabilizationWindowSeconds: 60  # default is 300s; shortened so tests finish faster
