@@ -71,38 +71,25 @@ func (q *Queue) StartScheduler(ctx context.Context) {
 			for _, jobJSON := range jobs {
 				var job Job
 				json.Unmarshal([]byte(jobJSON), &job)
+				// Claim first, then push. With several worker pods all running the
+				// scheduler, only the one whose ZREM removed the entry moves the job;
+				// the old order (push, then remove) let two pods push the same job.
+				n, err := q.client.ZRem(ctx, "delayed:"+q.Name, jobJSON).Result()
+				if err != nil || n == 0 {
+					continue
+				}
 				q.client.LPush(ctx, q.Names[job.Priority], jobJSON)
-				q.client.ZRem(ctx, "delayed:"+q.Name, jobJSON)
 			}
 		}
 	}
 }
 
+// Dequeue claims the highest-priority waiting job: it is removed from its lane
+// and recorded in active-jobs in one atomic step (see reliable.go). It blocks
+// until a job is available and returns false only when ctx is cancelled.
+// The caller owns the job: finish it, or the stalled detector will requeue it.
 func (q *Queue) Dequeue(ctx context.Context) (Job, bool) {
-
-	for {
-		result, err := q.client.BRPop(ctx, 1*time.Second, q.Names...).Result()
-
-		//The select checks if context is cancelled
-		if err == redis.Nil {
-			select {
-			case <-ctx.Done():
-				return Job{}, false
-			default:
-				continue
-			}
-		}
-
-		if err != nil {
-			return Job{}, false
-		}
-
-		var job Job
-		json.Unmarshal([]byte(result[1]), &job)
-
-		return job, true
-	}
-
+	return q.claim(ctx, "")
 }
 
 func (q *Queue) ListDead(ctx context.Context) ([]Job, error) {
@@ -129,7 +116,13 @@ func (q *Queue) ListDead(ctx context.Context) ([]Job, error) {
 }
 
 func (q *Queue) DetectStalled(ctx context.Context, threshold time.Duration) {
-	cutoff := strconv.FormatFloat(float64(time.Now().Add(-threshold).Unix()), 'f', 0, 64)
+	// Use Redis's clock: claim scores active jobs with Redis TIME, so comparing
+	// against this pod's clock would make the threshold drift with clock skew.
+	now, err := q.client.Time(ctx).Result()
+	if err != nil {
+		return
+	}
+	cutoff := strconv.FormatInt(now.Add(-threshold).Unix(), 10)
 	ids, err := q.client.ZRangeArgs(ctx, redis.ZRangeArgs{
 		Key:     "active-jobs:" + q.Name,
 		Start:   "0",
@@ -161,7 +154,12 @@ func (q *Queue) DetectStalled(ctx context.Context, threshold time.Duration) {
 		if a, err := strconv.Atoi(data["attempts"]); err == nil {
 			job.Attempts = a
 		}
-		q.client.ZRem(ctx, "active-jobs:"+q.Name, id)
+		// Every worker replica runs this detector, so two pods can both see the
+		// same stalled id. ZREM is atomic: only the one that actually removed the
+		// id (n == 1) requeues it; the other skips it instead of creating a duplicate.
+		if n, err := q.client.ZRem(ctx, "active-jobs:"+q.Name, id).Result(); err != nil || n == 0 {
+			continue
+		}
 		q.Enqueue(ctx, job)
 	}
 }
